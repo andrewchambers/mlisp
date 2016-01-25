@@ -132,11 +132,11 @@ const gc = {ctx
 			todie = std.slpush(todie, obj)
 		;;
 	;;
-	std.slfree(ctx.gcptrs)
 	ctx.gcptrs = survivors
 	for obj in todie
 		gcfree(obj)
 	;;
+	std.slfree(ctx.gcptrs)
 	std.slfree(todie)
 }
 
