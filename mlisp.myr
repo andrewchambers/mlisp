@@ -5,7 +5,7 @@ type obj = union
 	`Int int64
 	`List list
 	`Func func
-	`Env env
+	`Env env#
 ;;
 
 type list = struct
@@ -19,11 +19,11 @@ type func = struct
 
 type env = struct
 	parent : std.option(env#)
-	map : std.htab(byte[:], obj#)
+	map : std.htab(byte[:], obj#)#
 ;;
 
 type ulisp = struct
-	global : env
+	global : env#
 	gctab : std.htab(obj#, bool)#
 	gcptrs : obj#[:]
 ;;
@@ -32,11 +32,12 @@ const newsym = {ctx, name
 	 addgcobj(ctx, std.mk(`Sym std.sldup(name)))
 }
 
-const newenv = {ctx, parent
+const newenv = {ctx, parent : std.option(env#)
 	var e
 	
-	e = [.map = std.mkht(std.strhash, std.streq)]
+	e = std.mk([.map = std.mkht(std.strhash, std.streq)])
 	addgcobj(ctx, std.mk(`Env e))
+	-> e
 }
 
 const addgcobj = {ctx, pobj
@@ -58,6 +59,7 @@ const newulisp = {
 	ctx = std.alloc()
 	ctx.gctab = std.mkht(gchash, gceq)
 	ctx.gcptrs = std.slalloc(0)
+	ctx.global = newenv(ctx, `std.None)
 	-> ctx
 }
 
