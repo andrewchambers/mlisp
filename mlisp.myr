@@ -53,6 +53,43 @@ const gceq = {a, b
 	-> a == b
 }
 
+const gcfree = {obj
+	match obj
+	| &`std.Sym name: std.free(name)
+	| _: std.fatal("unimplemented gcfree")
+	;;
+	std.free(obj)
+}
+
+const gc = {ctx
+	var survivors, todie
+	
+	survivors = [][:]
+	todie = [][:]
+	
+	for obj in ctx.gcobjects
+		std.htput(ctx.gctab, obj, false) 
+	;;
+	for obj in ctx.gcobjects
+		match std.htget(ctx.gctab, obj)
+		| `std.Some mark:
+			if match
+				survivors = std.slpush(survivors, obj)
+			else
+				todie = std.slpush(todie, obj)
+			;;
+		| `std.None:
+			std.fatal("internal error\n")
+		;;
+	;;
+	std.slfree(ctx.gcobjects)
+	ctx.gcobjects = survivors
+	for obj in todie
+		gcfree(obj)
+	;;
+	std.slfree(todie)
+}
+
 const newulisp = {
 	var ctx
 	
@@ -66,5 +103,7 @@ const newulisp = {
 const main = {
 	var ctx : ulisp#
 	
-	ctx = newulisp() 
+	ctx = newulisp()
+	newsym(ctx, "foo")
+	gc(ctx)
 }
