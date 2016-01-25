@@ -75,9 +75,10 @@ const gceq = {a, b
 	-> a == b
 }
 
-const gcfree = {obj
-	match obj
+const gcfree = {pobj
+	match pobj
 	| &(`Sym name):
+		std.put("freeing {}\n", name)
 		std.slfree(name)
 	| &(`Env env):
 		std.htfree(env.map)
@@ -86,7 +87,7 @@ const gcfree = {obj
 	| &(`List _):
 	| &(`Func _):
 	;;
-	std.free(obj)
+	std.free(pobj)
 }
 
 const gcwalk = {gctab, pobj
@@ -132,12 +133,12 @@ const gc = {ctx
 			todie = std.slpush(todie, obj)
 		;;
 	;;
-	ctx.gcptrs = survivors
 	for obj in todie
 		gcfree(obj)
 	;;
 	std.slfree(ctx.gcptrs)
 	std.slfree(todie)
+	ctx.gcptrs = survivors
 }
 
 const envdefine = {env, sym, pobj
@@ -164,7 +165,6 @@ const main = {
 	while true
 		newsym(ctx, "foo")
 		envdefine(ctx.global, newsym(ctx, "x"), newsym(ctx, "bar"))
-		newenv(ctx, `std.None)
 		gc(ctx)
 	;;
 }
