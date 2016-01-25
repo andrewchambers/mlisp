@@ -1,0 +1,68 @@
+use std
+
+type obj = union
+	`Sym byte[:]
+	`Int int64
+	`List list
+	`Func func
+	`Env env
+;;
+
+type list = struct
+	head : obj#
+	tail : obj#
+;;
+
+type func = struct
+	body : list
+;;
+
+type env = struct
+	parent : std.option(env#)
+	map : std.htab(byte[:], obj#)
+;;
+
+type ulisp = struct
+	global : env
+	gctab : std.htab(obj#, bool)#
+	gcptrs : obj#[:]
+;;
+
+const newsym = {ctx, name
+	 addgcobj(ctx, std.mk(`Sym std.sldup(name)))
+}
+
+const newenv = {ctx, parent
+	var e
+	
+	e = [.map = std.mkht(std.strhash, std.streq)]
+	addgcobj(ctx, std.mk(`Env e))
+}
+
+const addgcobj = {ctx, pobj
+	ctx.gcptrs = std.slpush(ctx.gcptrs, pobj)
+	std.htput(ctx.gctab, pobj, false)
+}
+
+const gchash = {pobj
+	-> pobj castto(uint32)
+}
+
+const gceq = {a, b
+	-> a == b
+}
+
+const newulisp = {
+	var ctx
+	
+	ctx = std.alloc()
+	ctx.gctab = std.mkht(gchash, gceq)
+	ctx.gcptrs = std.slalloc(0)
+	-> ctx
+}
+
+const main = {
+	var ctx : ulisp#
+	
+	ctx = newulisp() 
+}
