@@ -1,1 +1,1 @@
-bin ulisp = mlisp.myr ;;
+bin mlisp = mlisp.myr ;;
