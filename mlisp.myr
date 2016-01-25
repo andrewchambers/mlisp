@@ -24,10 +24,8 @@ type env = struct
 
 type ulisp = struct
 	global : obj#
-	gctab : std.htab(obj#, bool)#
 	gcptrs : obj#[:]
 ;;
-
 
 const envhash = {pobj
 	match pobj
@@ -64,7 +62,6 @@ const newsym = {ctx, name
 
 const addgcobj = {ctx, pobj
 	ctx.gcptrs = std.slpush(ctx.gcptrs, pobj)
-	std.htput(ctx.gctab, pobj, false)
 }
 
 const gchash = {pobj
@@ -115,19 +112,21 @@ const gcwalk = {gctab, pobj
 
 const gc = {ctx
 	var survivors, todie
+	var marktab, marked
 	
 	survivors = [][:]
 	todie = [][:]
 	
+	marktab = std.mkht(gchash, gceq)
 	for obj in ctx.gcptrs
-		std.htput(ctx.gctab, obj, false) 
+		std.htput(marktab, obj, false) 
 	;;
-	
-	gcwalk(ctx.gctab, ctx.global)
-	
+	/* mark */
+	gcwalk(marktab, ctx.global)
+	/* sweep */
 	for obj in ctx.gcptrs
-		var mark = std.get(std.htget(ctx.gctab, obj))
-		if mark
+		marked = std.get(std.htget(marktab, obj))
+		if marked
 			survivors = std.slpush(survivors, obj)
 		else
 			todie = std.slpush(todie, obj)
@@ -136,6 +135,7 @@ const gc = {ctx
 	for obj in todie
 		gcfree(obj)
 	;;
+	std.htfree(marktab)
 	std.slfree(ctx.gcptrs)
 	std.slfree(todie)
 	ctx.gcptrs = survivors
@@ -152,7 +152,6 @@ const newulisp = {
 	var ctx
 	
 	ctx = std.alloc()
-	ctx.gctab = std.mkht(gchash, gceq)
 	ctx.gcptrs = [][:]
 	ctx.global = newenv(ctx, `std.None)
 	-> ctx
@@ -165,6 +164,7 @@ const main = {
 	while true
 		newsym(ctx, "foo")
 		envdefine(ctx.global, newsym(ctx, "x"), newsym(ctx, "bar"))
+		std.put("gc starting\n")
 		gc(ctx)
 	;;
 }
