@@ -14,12 +14,12 @@ type list = struct
 ;;
 
 type func = struct
-	body : list
+	body : obj#
 ;;
 
 type env = struct
 	parent : std.option(env#)
-	map : std.htab(byte[:], obj#)#
+	map : std.htab(obj#, obj#)#
 ;;
 
 type ulisp = struct
@@ -28,8 +28,19 @@ type ulisp = struct
 	gcptrs : obj#[:]
 ;;
 
-const newsym = {ctx, name
-	 addgcobj(ctx, std.mk(`Sym std.sldup(name)))
+
+const envhash = {pobj
+	match pobj
+	| &(`Sym name):	-> std.strhash(name)
+	| _:	std.fatal("internal error\n")
+	;;
+}
+
+const enveq = {a, b
+	match (a, b)
+	| (&(`Sym n1), &(`Sym n2)):	-> std.streq(n1, n2)
+	| _:	std.fatal("internal error\n")
+	;;
 }
 
 const newenv = {ctx, parent : std.option(env#)
@@ -37,10 +48,18 @@ const newenv = {ctx, parent : std.option(env#)
 	
 	obj = std.alloc()
 	env = std.alloc()
-	env.map = std.mkht(std.strhash, std.streq)
+	env.map = std.mkht(envhash, enveq)
 	obj# = `Env env
 	addgcobj(ctx, obj)
 	-> obj
+}
+
+const newsym = {ctx, name
+	var sym
+	
+	sym = std.mk(`Sym std.sldup(name))
+	addgcobj(ctx, sym)
+	-> sym	
 }
 
 const addgcobj = {ctx, pobj
@@ -63,27 +82,33 @@ const gcfree = {obj
 	| &(`Env env):
 		std.htfree(env.map)
 		std.free(env)
-	| _:
-		std.fatal("unimplemented gcfree\n")
+	| &(`Int _):
+	| &(`List _):
+	| &(`Func _):
 	;;
 	std.free(obj)
 }
 
-const walk = {gctab, pobj
+const gcwalk = {gctab, pobj
 	if std.get(std.htget(gctab, pobj))
 		-> void
 	;;
 	std.htput(gctab, pobj, true)
 	match pobj
 	| &(`Sym _):
+	| &(`Int _):
 	| &(`Env e):
-		var names = std.htkeys(e.map)
-		for name in names
-			walk(gctab, std.get(std.htget(e.map, name)))
+		var syms = std.htkeys(e.map)
+		for sym in syms
+			gcwalk(gctab, sym)
+			gcwalk(gctab, std.get(std.htget(e.map, sym)))
 		;;
-		std.slfree(names)
-	| _:
-		std.fatal("unimplemented match")
+		std.slfree(syms)
+	| &(`List l):
+		gcwalk(gctab, l.head)
+		gcwalk(gctab, l.tail)
+	| &(`Func f):
+		gcwalk(gctab, f.body)
 	;;
 }
 
@@ -97,7 +122,7 @@ const gc = {ctx
 		std.htput(ctx.gctab, obj, false) 
 	;;
 	
-	walk(ctx.gctab, ctx.global)
+	gcwalk(ctx.gctab, ctx.global)
 	
 	for obj in ctx.gcptrs
 		var mark = std.get(std.htget(ctx.gctab, obj))
@@ -115,12 +140,19 @@ const gc = {ctx
 	std.slfree(todie)
 }
 
+const envdefine = {env, sym, pobj
+	match env
+	| &(`Env e):	std.htput(e.map, sym, pobj)
+	| _:	std.fatal("internal error\n")
+	;;
+}
+
 const newulisp = {
 	var ctx
 	
 	ctx = std.alloc()
 	ctx.gctab = std.mkht(gchash, gceq)
-	ctx.gcptrs = std.slalloc(0)
+	ctx.gcptrs = [][:]
 	ctx.global = newenv(ctx, `std.None)
 	-> ctx
 }
@@ -129,6 +161,10 @@ const main = {
 	var ctx : ulisp#
 	
 	ctx = newulisp()
-	newsym(ctx, "foo")
-	gc(ctx)
+	while true
+		newsym(ctx, "foo")
+		envdefine(ctx.global, newsym(ctx, "x"), newsym(ctx, "bar"))
+		newenv(ctx, `std.None)
+		gc(ctx)
+	;;
 }
