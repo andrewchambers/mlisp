@@ -8,6 +8,11 @@ type obj = union
 	`Env env#
 ;;
 
+type reader = struct
+	input : byte[:]
+	idx : int
+;;
+
 type list = struct
 	head : std.option(obj#)
 	tail : std.option(obj#)
@@ -61,6 +66,14 @@ const mksym = {ctx, name
 	sym = std.mk(`Sym std.sldup(name))
 	addgcobj(ctx, sym)
 	-> sym	
+}
+
+const mknum = {ctx, v
+	var n
+	
+	n = std.mk(`Int v)
+	addgcobj(ctx, n)
+	-> n	
 }
 
 const addgcobj = {ctx, pobj
@@ -230,11 +243,101 @@ const newulisp = {
 	-> ctx
 }
 
+const mkrdr = {txt
+	-> std.mk([.input = txt, .idx = 0])
+}
+
+const peekchar = {rdr
+	if rdr.idx == rdr.input.len
+		-> `std.None
+	;;
+	-> `std.Some rdr.input[rdr.idx]
+}
+
+const getchar = {rdr
+	var c
+	
+	c = peekchar(rdr)
+	rdr.idx++
+	-> c
+}
+
+const isdigit = {c
+	if c < '0' castto(byte)
+		-> false
+	;;
+	if c > '9' castto(byte)
+		-> false
+	;;
+	-> true
+}
+
+const readnum = {ctx, rdr
+	var n
+	
+	n = 0
+	while true
+		match peekchar(rdr)
+		| `std.Some c:
+			if !isdigit(c)
+				break
+			;;
+			getchar(rdr)
+			n *= 10
+			n += (c - ('0' castto(byte))) castto(int64)
+		| `std.None:
+			break
+		;;
+	;;
+	-> mknum(ctx, n)
+}
+
+const readlist = {ctx, rdr
+	var r
+	
+	while true
+		match peekchar(rdr)
+		/*
+		| `std.Some ')':
+			getchar(rdr)
+			break
+		*/
+		| `std.None:
+			std.fatal("unclosed list\n")
+		| _:
+			r = read(ctx, rdr)
+		;;
+	;;
+}
+
+const read = {ctx, rdr
+	match peekchar(rdr)
+	/*
+	| `std.Some '(':
+		-> readlist(ctx, rdr)
+		*/
+	| `std.Some c:
+		if isdigit(c)
+			-> `std.Some readnum(ctx, rdr)
+		;;
+	| `std.None: -> `std.None
+	;;
+	-> `std.None
+}
+
 const main = {
 	var ctx : ulisp#
+	var rdr : reader#
 	
 	ctx = newulisp()
-	envdefine(ctx.global, mksym(ctx, "foo"), mksym(ctx, "bar"))
-	eval(ctx, ctx.global, mksym(ctx, "foo"))
+	rdr = mkrdr("123")
+	match read(ctx, rdr)
+	| `std.Some &(`Int v):
+		std.put("readint {}\n", v)
+	| `std.Some pobj:
+		eval(ctx, ctx.global, pobj)
+	| `std.None:
+		std.fatal("read failed...\n")
+	;;
 	gc(ctx)
 }
