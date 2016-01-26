@@ -9,8 +9,8 @@ type obj = union
 ;;
 
 type list = struct
-	head : obj#
-	tail : obj#
+	head : std.option(obj#)
+	tail : std.option(obj#)
 ;;
 
 type func = struct
@@ -18,7 +18,8 @@ type func = struct
 ;;
 
 type env = struct
-	parent : std.option(env#)
+	parent : std.option(obj#)
+	child : std.option(obj#)
 	map : std.htab(obj#, obj#)#
 ;;
 
@@ -41,11 +42,13 @@ const enveq = {a, b
 	;;
 }
 
-const mkenv = {ctx, parent : std.option(env#)
+const mkenv = {ctx, parent
 	var obj, env
 	
 	obj = std.alloc()
 	env = std.alloc()
+	env.parent = parent
+	env.child = `std.None
 	env.map = std.mkht(envhash, enveq)
 	obj# = `Env env
 	addgcobj(ctx, obj)
@@ -103,8 +106,16 @@ const gcwalk = {gctab, pobj
 		;;
 		std.slfree(syms)
 	| &(`List l):
-		gcwalk(gctab, l.head)
-		gcwalk(gctab, l.tail)
+		match l.head
+		| `std.Some head:
+			gcwalk(gctab, head)
+		| _:
+		;;
+		match l.head
+		| `std.Some tail:
+			gcwalk(gctab, tail)
+		| _:
+		;;
 	| &(`Func f):
 		gcwalk(gctab, f.body)
 	;;
@@ -146,12 +157,56 @@ const envdefine = {env, sym, pobj
 	| &(`Env e):	std.htput(e.map, sym, pobj)
 	| _:	std.fatal("internal error\n")
 	;;
+	-> pobj
+}
+
+const envlookup = {env, sym
+	match env
+	| &(`Env e):
+		match std.htget(e.map, sym)
+		| `std.Some v:	-> `std.Some v
+		| `std.None:
+		;;
+		match e.parent
+		| `std.Some p:	-> envlookup(p, sym)
+		| `std.None:	-> `std.None
+		;;
+	| _:
+		std.fatal("internal error\n")
+	;;
 }
 
 const eval = {ctx, env, val
 	match val
-	| &(`Sym name):	-> val
+	| &(`Sym name):
+		match envlookup(env, val)
+		| `std.Some r: -> r
+		| `std.None:	std.fatal("cannot find {} in the current scope\n", name)
+		;;
 	| &(`Int _): -> val
+	| &(`List [
+		.head = `std.Some &(`Sym "if"),
+		.tail = `std.Some &(`List [
+			.head = `std.Some cond, 
+			.tail = `std.Some &(`List [
+				.head = `std.Some iftrue, 
+				.tail = `std.Some &(`List [
+					.head = `std.Some iffalse, 
+					.tail = `std.None])])])]):
+		match eval(ctx, env, cond)
+		| &(`Sym "#t"):
+			-> eval(ctx, env, iftrue)
+		| _:
+			-> eval(ctx, env, iffalse)
+		;;
+	| &(`List [
+		.head = `std.Some &(`Sym "def"),
+		.tail = `std.Some &(`List [
+			.head = `std.Some sym, 
+			.tail = `std.Some &(`List [
+				.head = `std.Some rhs, 
+				.tail = `std.None])])]):
+		-> envdefine(env, sym, eval(ctx, env, rhs))
 	| &(`List l): -> evalcall(ctx, env, l) 
 	| _: std.fatal("cannot eval value\n")
 	;;
@@ -159,9 +214,8 @@ const eval = {ctx, env, val
 
 const evalcall = {ctx, env, l
 	match l.head
-	| &(`Sym "if"):
-		-> mksym(ctx, "#t")
-	| &(`Sym "def"):
+	
+	| `std.Some &(`Sym "def"):
 		-> mksym(ctx, "#t")
 	| _: std.fatal("cannot eval value\n")
 	;;
@@ -180,6 +234,7 @@ const main = {
 	var ctx : ulisp#
 	
 	ctx = newulisp()
-	std.put("{}\n", eval(ctx, ctx.global, mksym(ctx, "foo")))
+	envdefine(ctx.global, mksym(ctx, "foo"), mksym(ctx, "bar"))
+	eval(ctx, ctx.global, mksym(ctx, "foo"))
 	gc(ctx)
 }
