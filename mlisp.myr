@@ -41,7 +41,7 @@ const enveq = {a, b
 	;;
 }
 
-const newenv = {ctx, parent : std.option(env#)
+const mkenv = {ctx, parent : std.option(env#)
 	var obj, env
 	
 	obj = std.alloc()
@@ -52,7 +52,7 @@ const newenv = {ctx, parent : std.option(env#)
 	-> obj
 }
 
-const newsym = {ctx, name
+const mksym = {ctx, name
 	var sym
 	
 	sym = std.mk(`Sym std.sldup(name))
@@ -148,12 +148,31 @@ const envdefine = {env, sym, pobj
 	;;
 }
 
+const eval = {ctx, env, val
+	match val
+	| &(`Sym name):	-> val
+	| &(`Int _): -> val
+	| &(`List l): -> evalcall(ctx, env, l) 
+	| _: std.fatal("cannot eval value\n")
+	;;
+}
+
+const evalcall = {ctx, env, l
+	match l.head
+	| &(`Sym "if"):
+		-> mksym(ctx, "#t")
+	| &(`Sym "def"):
+		-> mksym(ctx, "#t")
+	| _: std.fatal("cannot eval value\n")
+	;;
+}
+
 const newulisp = {
 	var ctx
 	
 	ctx = std.alloc()
 	ctx.gcptrs = [][:]
-	ctx.global = newenv(ctx, `std.None)
+	ctx.global = mkenv(ctx, `std.None)
 	-> ctx
 }
 
@@ -161,10 +180,6 @@ const main = {
 	var ctx : ulisp#
 	
 	ctx = newulisp()
-	while true
-		newsym(ctx, "foo")
-		envdefine(ctx.global, newsym(ctx, "x"), newsym(ctx, "bar"))
-		std.put("gc starting\n")
-		gc(ctx)
-	;;
+	std.put("{}\n", eval(ctx, ctx.global, mksym(ctx, "foo")))
+	gc(ctx)
 }
