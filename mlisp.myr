@@ -5,7 +5,7 @@ type obj = union
 	`Int int64
 	`List std.option((obj#, obj#))
 	`Func func
-	`Builtin (ctx : ulisp#, e : env#, args : obj# -> obj#)
+	`Builtin (ctx : lisp#, e : obj#, args : obj# -> obj#)
 	`Env env#
 ;;
 
@@ -24,10 +24,27 @@ type env = struct
 	map : std.htab(obj#, obj#)#
 ;;
 
-type ulisp = struct
+type lisp = struct
 	global : obj#
 	gcptrs : obj#[:]
 ;;
+
+const printobj = {pobj : obj#
+	match pobj
+	| &(`Sym name):
+		std.put("sym {}\n", name)
+	| &(`Env env):
+		std.put("env\n")
+	| &(`List _):
+		std.put("list\n")
+	| &(`Int _):
+		std.put("int\n")
+	| &(`Func _):
+		std.put("func\n")
+	| &(`Builtin _):
+		std.put("builtin\n")
+	;;
+}
 
 const envhash = {pobj
 	match pobj
@@ -41,6 +58,15 @@ const enveq = {a, b
 	| (&(`Sym n1), &(`Sym n2)):	-> std.streq(n1, n2)
 	| _:	std.fatal("internal error\n")
 	;;
+}
+
+const mklisp = {
+	var ctx
+	
+	ctx = std.alloc()
+	ctx.gcptrs = [][:]
+	ctx.global = mkenv(ctx, `std.None)
+	-> ctx
 }
 
 const mkenv = {ctx, parent
@@ -68,7 +94,7 @@ const slicetolist = {ctx, sl
 	var l
 	
 	l = mkemptylist(ctx)
-	for var i = sl.len - 1; i > 0; i--
+	for var i = sl.len - 1; i >= 0; i--
 		l = mklist(ctx, sl[i], l)
 	;;
 	-> l
@@ -113,7 +139,6 @@ const gceq = {a, b
 const gcfree = {pobj
 	match pobj
 	| &(`Sym name):
-		std.put("a")
 		std.slfree(name)
 	| &(`Env env):
 		std.htfree(env.map)
@@ -183,6 +208,9 @@ const gc = {ctx
 }
 
 const envdefine = {env, sym, pobj
+	std.put("defining val\n")
+	printobj(sym)
+	printobj(pobj)
 	match env
 	| &(`Env e):	std.htput(e.map, sym, pobj)
 	| _:	std.fatal("internal error\n")
@@ -232,7 +260,8 @@ const evallist = {ctx, env, list
 	| &(`List `std.Some (val, rest)):
 		f = eval(ctx, env, val)
 		match f
-		| &(`Builtin _): std.fatal("builtins not implemented\n")
+		| &(`Builtin _):
+			std.fatal("builtins not implemented\n")
 		| &(`Func _):
 			params = std.slalloc(0)
 			while true
@@ -248,22 +277,15 @@ const evallist = {ctx, env, list
 			listparams = slicetolist(ctx, params)
 			std.slfree(params)
 			-> apply(ctx, env, f, listparams)
-		| _: std.fatal("can only call builtins or functions")
+		| _:
+			printobj(f)
+			std.fatal("can only call builtins or functions\n")
 		;;
 	| _: std.fatal("internal error\n")
 	;;
 }
 
-const newulisp = {
-	var ctx
-	
-	ctx = std.alloc()
-	ctx.gcptrs = [][:]
-	ctx.global = mkenv(ctx, `std.None)
-	-> ctx
-}
-
-const mkrdr = {txt -> reader#
+const mkreader = {txt
 	-> std.mk([.input = txt, .idx = 0])
 }
 
@@ -278,7 +300,9 @@ const getchar = {rdr
 	var c
 	
 	c = peekchar(rdr)
-	rdr.idx++
+	if rdr.idx != rdr.input.len
+		rdr.idx++
+	;;
 	-> c
 }
 
@@ -329,7 +353,7 @@ const readsym = {ctx, rdr
 	while true
 		match peekchar(rdr)
 		| `std.Some c:
-			if c == 40 || c == 41 || isws(c)
+			if c == ('(' castto(byte)) || c == (')' castto(byte)) || isws(c)
 				break
 			;;
 			name = std.slpush(name, c)
@@ -340,6 +364,7 @@ const readsym = {ctx, rdr
 	;;
 	sym = mksym(ctx, name)
 	std.slfree(name)
+	printobj(sym)
 	-> sym
 }
 
@@ -349,19 +374,20 @@ const readlist = {ctx, rdr
 	sl = std.slalloc(0)
 	getchar(rdr)
 	while true
+		skipws(rdr)
 		match peekchar(rdr)
 		| `std.Some 41:
 			getchar(rdr)
 			break
-		| `std.None:
-			std.fatal("unclosed list\n")
-		| _:
+		| `std.Some c:
 			match read(ctx, rdr)
 			| `std.Some v:
 				sl = std.slpush(sl, v)
 			| _:
 				std.fatal("failed to read list element\n")
 			;;
+		| `std.None:
+			std.fatal("unclosed list\n")
 		;;
 	;;
 	l = slicetolist(ctx, sl)
@@ -369,7 +395,22 @@ const readlist = {ctx, rdr
 	-> l
 }
 
-const read = {ctx : ulisp#, rdr : reader# -> std.option(obj#) 
+const skipws = {rdr
+	while true
+		match peekchar(rdr)
+		| `std.Some c:
+			if !isws(c)
+				break
+			;;
+		| `std.None:
+			break
+		;;
+		getchar(rdr)
+	;;
+}
+
+const read = {ctx : lisp#, rdr : reader# -> std.option(obj#) 
+	skipws(rdr)
 	match peekchar(rdr)
 	| `std.Some 40:
 		-> `std.Some readlist(ctx, rdr)
@@ -377,25 +418,71 @@ const read = {ctx : ulisp#, rdr : reader# -> std.option(obj#)
 		if isdigit(c)
 			-> `std.Some readnum(ctx, rdr)
 		;;
-		if isws(c)
-			getchar(rdr)
-			-> read(ctx, rdr)
-		;;
 		-> `std.Some readsym(ctx, rdr)
 	| `std.None:
 		-> `std.None
 	;;
 }
 
-const main = {
-	var ctx : ulisp#
-	var rdr : reader#
-	var v
+const listlen = {l
+	var len = 0
+	while true
+		match l
+		| &(`List `std.Some (_, rest)):
+			len++
+			l = rest
+		| &(`List `std.None): break
+		| _: std.fatal("bad list while getting len\n")
+		;;
+	;;
+	-> len
+}
+
+const builtin_if = {ctx, env, params -> obj#
+	match params
+	| &(`List `std.Some (cond, \
+		&(`List `std.Some (iftrue, \
+		&(`List `std.Some (iffalse, &(`List `std.None))))))):
+		match eval(ctx, env, cond)
+		| &(`Sym "#t"):
+			-> eval(ctx, env, iftrue)
+		| _:
+			-> eval(ctx, env, iffalse)
+		;;
+	| _:
+		std.fatal("malformed if\n")
+	;;
+}
+
+const addbuiltin = {ctx, name, f
+	var b
 	
-	ctx = newulisp()
-	for ; ;
-		v = mknum(ctx, 3)
-		gc(ctx)		
+	b = std.mk(`Builtin f)
+	envdefine(ctx.global, mksym(ctx, name), b)
+	addgcobj(ctx, b)
+}
+
+const addstdbuiltins = {ctx
+	addbuiltin(ctx, "if", builtin_if)
+}
+
+const main = {
+	var ctx : lisp#
+	var rdr : reader#
+	
+	ctx = mklisp()
+	addstdbuiltins(ctx)
+	if false
+		rdr = mkreader(" ( if )")
+		for ; ;
+			match read(ctx, rdr)
+			| `std.Some v:
+				eval(ctx, ctx.global, v)
+				gc(ctx)
+			| `std.None:
+				break
+			;;		
+		;;
 	;;
 	
 }
