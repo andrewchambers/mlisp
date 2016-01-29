@@ -1,5 +1,7 @@
 use std
 
+const debuggc = true
+
 type obj = union
 	`Sym byte[:]
 	`Int int64
@@ -7,6 +9,7 @@ type obj = union
 	`Func func
 	`Builtin (ctx : lisp#, e : obj#, args : obj# -> obj#)
 	`Env env#
+	`Uninit
 ;;
 
 type reader = struct
@@ -43,6 +46,8 @@ const printobj = {pobj : obj#
 		std.put("func\n")
 	| &(`Builtin _):
 		std.put("builtin\n")
+	| &(`Uninit):
+		std.fatal("BUG: use of freed object\n")
 	;;
 }
 
@@ -83,45 +88,45 @@ const mkenv = {ctx, parent
 }
 
 const mkemptylist = {ctx
-	var l
-	
-	l = std.mk(`List `std.None)
-	addgcobj(ctx, l)
-	-> l
-}
-
-const slicetolist = {ctx, sl
-	var l
-	
-	l = mkemptylist(ctx)
-	for var i = sl.len - 1; i >= 0; i--
-		l = mklist(ctx, sl[i], l)
-	;;
-	-> l
+	-> mkobj(ctx, `List `std.None)
 }
 
 const mklist = {ctx, val, rest
-	var l
-	
-	l = std.mk(`List `std.Some (val, rest))
-	addgcobj(ctx, l)
-	-> l
+	-> mkobj(ctx, `List `std.Some (val, rest))
 }
 
 const mksym = {ctx, name
-	var sym
-	
-	sym = std.mk(`Sym std.sldup(name))
-	addgcobj(ctx, sym)
-	-> sym	
+	-> mkobj(ctx, `Sym std.sldup(name))	
 }
 
 const mknum = {ctx, v
-	var n
-	
-	n = std.mk(`Int v)
-	addgcobj(ctx, n)
-	-> n	
+	-> mkobj(ctx, `Int v)
+}
+
+generic mkobj = {ctx, obj
+	var pobj
+	if debuggc
+		gc(ctx)
+	;;
+	pobj = std.mk(obj)
+	addgcobj(ctx, pobj)
+	-> pobj
+}
+
+var uninit
+
+/* XXX Investigate compiler crash */
+const __init__ = {
+	uninit = `Uninit
+}
+
+const pushroot = {ctx, ppobj
+	ppobj# = &uninit
+	std.fatal("todo pushroot...")
+}
+
+const poproot = {ctx
+	std.fatal("todo poproot...")
 }
 
 const addgcobj = {ctx, pobj
@@ -147,8 +152,14 @@ const gcfree = {pobj
 	| &(`Int _):
 	| &(`Func _):
 	| &(`Builtin _):
+	| &(`Uninit):
+		std.fatal("freeing free obj")
 	;;
-	std.free(pobj)
+	if debuggc
+		pobj# = `Uninit
+	else
+		std.free(pobj)
+	;;
 }
 
 const gcwalk = {gctab, pobj
@@ -173,6 +184,8 @@ const gcwalk = {gctab, pobj
 	| &(`Func f):
 		gcwalk(gctab, f.body)
 	| &(`Builtin _):
+	| &(`Uninit):
+		std.fatal("BUG: use of freed object\n")
 	;;
 }
 
@@ -252,7 +265,10 @@ const apply = {ctx, env, f, params
 }
 
 const evalcall = {ctx, env, list
-	var f
+	var f, result
+	
+	pushroot(ctx, &f)
+	pushroot(ctx, &result)
 	
 	match list
 	| &(`List `std.None):
@@ -261,25 +277,31 @@ const evalcall = {ctx, env, list
 		f = eval(ctx, env, val)
 		match f
 		| &(`Builtin bif):
-			-> bif(ctx, env, rest)
+			result = bif(ctx, env, rest)
 		| &(`Func _):
-			-> apply(ctx, env, f, evallist(ctx, env, rest))
+			result = apply(ctx, env, f, evallist(ctx, env, rest))
 		| _:
 			printobj(f)
 			std.fatal("can only call builtins or functions\n")
 		;;
 	| _: std.fatal("internal error\n")
 	;;
+	
+	poproot(ctx)
+	poproot(ctx)
+	-> result
 }
 
 const evallist = {ctx, env, list
-	var sl, result
+	var result
 	
-	sl = std.slalloc(0)
+	pushroot(ctx, &result)
+	
+	result = mkemptylist(ctx)
 	while true
 		match list
 		| &(`List `std.Some (v, rest)):
-			sl = std.slpush(sl, eval(ctx, env, v))
+			result = mklist(ctx, result, eval(ctx, env, v))
 			list = rest
 		| &(`List `std.None):
 			break
@@ -287,8 +309,9 @@ const evallist = {ctx, env, list
 			std.fatal("cannot eval malformed list\n")
 		;;
 	;;
-	result = slicetolist(ctx, sl)
-	std.slfree(sl)
+	result = listrev(ctx, result)
+	
+	poproot(ctx)
 	-> result
 }
 
@@ -376,9 +399,11 @@ const readsym = {ctx, rdr
 }
 
 const readlist = {ctx, rdr
-	var l, sl
+	var l
 	
-	sl = std.slalloc(0)
+	pushroot(ctx, &l)
+	l = mkemptylist(ctx)
+	
 	getchar(rdr)
 	while true
 		skipws(rdr)
@@ -389,7 +414,7 @@ const readlist = {ctx, rdr
 		| `std.Some c:
 			match read(ctx, rdr)
 			| `std.Some v:
-				sl = std.slpush(sl, v)
+				l = mklist(ctx, v, l)
 			| _:
 				std.fatal("failed to read list element\n")
 			;;
@@ -397,8 +422,8 @@ const readlist = {ctx, rdr
 			std.fatal("unclosed list\n")
 		;;
 	;;
-	l = slicetolist(ctx, sl)
-	std.slfree(sl)
+	l = listrev(ctx, l)
+	poproot(ctx)
 	-> l
 }
 
@@ -431,6 +456,27 @@ const read = {ctx : lisp#, rdr : reader# -> std.option(obj#)
 	;;
 }
 
+const listrev = {ctx, l
+	var rev
+	
+	pushroot(ctx, &rev)
+	
+	rev = mkemptylist(ctx)
+	while true
+		match l
+		| &(`List `std.Some (v, rest)):
+			rev = mklist(ctx, v, l)
+		| &(`List `std.None):
+			break
+		| _:
+			std.fatal("bad list in listrev\n")
+		;;
+	;;
+	
+	poproot(ctx)
+	-> rev
+}
+
 const listlen = {l
 	var len = 0
 	while true
@@ -438,7 +484,8 @@ const listlen = {l
 		| &(`List `std.Some (_, rest)):
 			len++
 			l = rest
-		| &(`List `std.None): break
+		| &(`List `std.None):
+			break
 		| _: std.fatal("bad list while getting len\n")
 		;;
 	;;
@@ -446,23 +493,33 @@ const listlen = {l
 }
 
 const builtin_if = {ctx, env, params -> obj#
+	var result
+	
+	pushroot(ctx, &result)
+	
 	match params
 	| &(`List `std.Some (cond, \
 		&(`List `std.Some (iftrue, \
 		&(`List `std.Some (iffalse, &(`List `std.None))))))):
 		match eval(ctx, env, cond)
 		| &(`Sym "#t"):
-			-> eval(ctx, env, iftrue)
+			result = eval(ctx, env, iftrue)
 		| _:
-			-> eval(ctx, env, iffalse)
+			result = eval(ctx, env, iffalse)
 		;;
 	| _:
 		std.fatal("malformed if\n")
 	;;
+	poproot(ctx)
+	-> result
 }
 
 const builtin_eq = {ctx, env, params -> obj#
-	var l, r, eq
+	var l, r
+	var eq
+	
+	pushroot(ctx, &l)
+	pushroot(ctx, &r)
 	
 	params = evallist(ctx, env, params)
 	match params
@@ -484,6 +541,8 @@ const builtin_eq = {ctx, env, params -> obj#
 		eq = false
 	;;
 	
+	poproot(ctx)
+	poproot(ctx)
 	if eq
 		-> mksym(ctx, "#f")
 	else
@@ -494,9 +553,10 @@ const builtin_eq = {ctx, env, params -> obj#
 const addbuiltin = {ctx, name, f
 	var b
 	
-	b = std.mk(`Builtin f)
+	pushroot(ctx, &b)
+	b = mkobj(ctx, `Builtin f)
 	envdefine(ctx.global, mksym(ctx, name), b)
-	addgcobj(ctx, b)
+	poproot(ctx)
 }
 
 const addstdbuiltins = {ctx
