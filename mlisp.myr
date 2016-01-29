@@ -242,7 +242,7 @@ const eval = {ctx, env, val
 		| `std.None:	std.fatal("cannot find {} in the current scope\n", name)
 		;;
 	| &(`Int _): -> val
-	| &(`List _): -> evallist(ctx, env, val)
+	| &(`List _): -> evalcall(ctx, env, val)
 	| _: std.fatal("cannot eval value\n")
 	;;
 }
@@ -251,8 +251,8 @@ const apply = {ctx, env, f, params
 	-> mksym(ctx, "fuck")
 }
 
-const evallist = {ctx, env, list
-	var f, params, listparams
+const evalcall = {ctx, env, list
+	var f
 	
 	match list
 	| &(`List `std.None):
@@ -260,29 +260,36 @@ const evallist = {ctx, env, list
 	| &(`List `std.Some (val, rest)):
 		f = eval(ctx, env, val)
 		match f
-		| &(`Builtin _):
-			std.fatal("builtins not implemented\n")
+		| &(`Builtin bif):
+			-> bif(ctx, env, rest)
 		| &(`Func _):
-			params = std.slalloc(0)
-			while true
-				match rest
-				| &(`List `std.Some(v, tail)):
-					rest = tail
-					params = std.slpush(params, eval(ctx, env, v))
-				| &(`List `std.None):
-				| _:
-					std.fatal("list tail is not a list\n")
-				;;
-			;;
-			listparams = slicetolist(ctx, params)
-			std.slfree(params)
-			-> apply(ctx, env, f, listparams)
+			-> apply(ctx, env, f, evallist(ctx, env, rest))
 		| _:
 			printobj(f)
 			std.fatal("can only call builtins or functions\n")
 		;;
 	| _: std.fatal("internal error\n")
 	;;
+}
+
+const evallist = {ctx, env, list
+	var sl, result
+	
+	sl = std.slalloc(0)
+	while true
+		match list
+		| &(`List `std.Some (v, rest)):
+			sl = std.slpush(sl, eval(ctx, env, v))
+			list = rest
+		| &(`List `std.None):
+			break
+		| _:
+			std.fatal("cannot eval malformed list\n")
+		;;
+	;;
+	result = slicetolist(ctx, sl)
+	std.slfree(sl)
+	-> result
 }
 
 const mkreader = {txt
@@ -454,6 +461,36 @@ const builtin_if = {ctx, env, params -> obj#
 	;;
 }
 
+const builtin_eq = {ctx, env, params -> obj#
+	var l, r, eq
+	
+	params = evallist(ctx, env, params)
+	match params
+	| &(`List `std.Some (L , \
+		&(`List `std.Some (R, \ 
+		&(`List `std.None))))):
+		l = L
+		r = R
+	| _:
+		std.fatal("= requires two parameters")
+	;;
+	
+	match (l, r)
+	| (&(`Int v1), &(`Int v2)):
+		eq = v1 == v2
+	|(&(`Sym v1), &(`Sym v2)):
+		eq = std.sleq(v1, v2)
+	|_:
+		eq = false
+	;;
+	
+	if eq
+		-> mksym(ctx, "#f")
+	else
+		-> mksym(ctx, "#t")
+	;;
+}
+
 const addbuiltin = {ctx, name, f
 	var b
 	
@@ -464,6 +501,7 @@ const addbuiltin = {ctx, name, f
 
 const addstdbuiltins = {ctx
 	addbuiltin(ctx, "if", builtin_if)
+	addbuiltin(ctx, "=", builtin_eq)
 }
 
 const main = {
@@ -473,7 +511,7 @@ const main = {
 	ctx = mklisp()
 	addstdbuiltins(ctx)
 	if false
-		rdr = mkreader(" ( if )")
+		rdr = mkreader(" (if )")
 		for ; ;
 			match read(ctx, rdr)
 			| `std.Some v:
